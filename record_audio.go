@@ -1,61 +1,65 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"log"
-	"os"
-	"os/signal"
-	"strings"
-	"syscall"
-
-	"math/rand"
-	"time"
-
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/dynamodb"
-	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
+	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/bwmarrin/discordgo"
 	"github.com/joho/godotenv"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v3/pkg/media"
 	"github.com/pion/webrtc/v3/pkg/media/oggwriter"
+	"log"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
 )
 
-// Variables used for command line parameters
+var ctx = context.Background()
+var dgVoice *discordgo.Session
+var connection *discordgo.VoiceConnection
+var fileLocation uint32
 
-const charset = "abcdefghijklmnopqrstuvwxyz" +
-	"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
-var seededRand *rand.Rand = rand.New(
-	rand.NewSource(time.Now().UnixNano()))
 
-func stringWithCharset(length int, charset string) string {
-	b := make([]byte, length)
-	for i := range b {
-		b[i] = charset[seededRand.Intn(len(charset))]
+func main() {
+	LoadEnv()
+	Token := GetEnvWithKey("Token")
+	var err error
+	dgVoice, err = discordgo.New("Bot " + Token)
+	if err != nil {
+		fmt.Println("error creating Discord session,", err)
+		return
 	}
-	return string(b)
+	defer dgVoice.Close()
+	dgVoice.Identify.Intents = discordgo.MakeIntent(discordgo.IntentsGuildVoiceStates)
+	err = dgVoice.Open()
+	if err != nil {
+		fmt.Println("error opening connection:", err)
+		return
+	}
+	handleMessages()
 }
 
-func randomString(length int) string {
-	return stringWithCharset(length, charset)
+func GetEnvWithKey(key string) string {
+	return os.Getenv(key)
 }
 
-type item struct {
-	id          string
-	channelName string
-	channelID   string
-	status      bool
+func LoadEnv() {
+	err := godotenv.Load(".env")
+	if err != nil {
+		log.Fatalf("Error loading .env file")
+		os.Exit(1)
+	}
 }
 
-type config struct {
-	Token     string `env:"Token"`
-	ChannelID string `env:"ChannelID"`
-	GuildID   string `env:"GuildID"`
-}
 
-func createPionRTPPacket(p *discordgo.Packet) *rtp.Packet {
+
+func createPitonRTPPacket(p *discordgo.Packet) *rtp.Packet {
 	return &rtp.Packet{
 		Header: rtp.Header{
 			Version: 2,
@@ -69,124 +73,67 @@ func createPionRTPPacket(p *discordgo.Packet) *rtp.Packet {
 	}
 }
 
-func goDotEnvVariable(key string) string {
-	err := godotenv.Load(".env")
-	if err != nil {
-		log.Fatalf("Error loading .env file")
-	}
-	return os.Getenv(key)
-}
 
-func handleVoice(c chan *discordgo.Packet, id string) {
-	files := make(map[string]media.Writer)
+func handleVoice(c chan *discordgo.Packet, channel string) {
+	files := make(map[uint32]media.Writer)
 	for p := range c {
-		file, ok := files[id]
+		file, ok := files[p.SSRC]
 		if !ok {
+			fileLocation= p.SSRC
 			var err error
-			file, err = oggwriter.New(fmt.Sprintf("%s.ogg", id), 48000, 2)
+			file, err = oggwriter.New(fmt.Sprintf("%d.ogg", p.SSRC), 48000, 2)
 			if err != nil {
-				fmt.Printf("failed to create file %s.ogg, giving up on recording: %v\n", id, err)
+				fmt.Printf("failed to create file %d.ogg, giving up on recording: %v\n", p.SSRC, err)
 				return
 			}
-			files[id] = file
+			files[p.SSRC] = file
 		}
-		// Construct pion RTP packet from DiscordGo's type.
-		rtp := createPionRTPPacket(p)
+		rtp := createPitonRTPPacket(p)
 		err := file.WriteRTP(rtp)
 		if err != nil {
-			fmt.Printf("failed to write to file %s.ogg, giving up on recording: %v\n", id, err)
+			fmt.Printf("failed to write to file %d.ogg, giving up on recording: %v\n", p.SSRC, err)
 		}
 	}
 
-	// Once we made it here, we're done listening for packets. Close all files
 	for _, f := range files {
-
 		f.Close()
+		fmt.Println(fileLocation)
+		fmt.Println("Closed file")
 	}
 }
 
 func handleConfig(status bool, channelName string) {
-	Token := goDotEnvVariable("Token")
-	GuildID := goDotEnvVariable("GuildID")
-	ChannelID := goDotEnvVariable("ChannelID")
-	s, err := discordgo.New("Bot " + Token)
-	channels, _ := s.GuildChannels(GuildID)
-	for _, c := range channels {
-		fmt.Println(c)
-		if c.Name == channelName {
-			ChannelID = c.ID
 
-		}
-	}
-	if err != nil {
-		fmt.Println("error creating Discord session:", err)
-		return
-	}
-	defer s.Close()
-
-	// We only really care about receiving voice state updates.
-	s.Identify.Intents = discordgo.MakeIntent(discordgo.IntentsGuildVoiceStates)
-
-	err = s.Open()
-	if err != nil {
-		fmt.Println("error opening connection:", err)
-		return
-	}
-	v, err := s.ChannelVoiceJoin(GuildID, ChannelID, true, false)
-	if err != nil {
-		fmt.Println("failed to join voice channel:", err)
-		return
-	}
 
 	if status {
-		id := randomString(6)
-		sess := session.Must(session.NewSessionWithOptions(session.Options{
-			SharedConfigState: session.SharedConfigEnable,
-			Config: aws.Config{
-				Region: aws.String("ap-south-1"),
-			},
-		}))
-		svc := dynamodb.New(sess)
-		item := item{
-			id:          id,
-			channelName: channelName,
-			channelID:   ChannelID,
-			status:      false,
+		GuildID := GetEnvWithKey("GuildID")
+		ChannelID := GetEnvWithKey("ChannelID")
+		channels, _ := dgVoice.GuildChannels(GuildID)
+		for _, c := range channels {
+			if c.Name == channelName {
+				ChannelID = c.ID
+			}
 		}
 
-		av, err := dynamodbattribute.MarshalMap(item)
+		v, err := dgVoice.ChannelVoiceJoin(GuildID, ChannelID, true, false)
 		if err != nil {
-			fmt.Println("Got error marshalling new item:")
-			fmt.Println(err.Error())
-			os.Exit(1)
+			fmt.Println("failed to join voice channel:", err)
+			return
 		}
-
-		tableName := "MoMBOT"
-
-		input := &dynamodb.PutItemInput{
-			Item:      av,
-			TableName: aws.String(tableName),
-		}
-
-		_, err = svc.PutItem(input)
-		if err != nil {
-			fmt.Println("Got error calling PutItem:")
-			fmt.Println(err.Error())
-			os.Exit(1)
-		}
-		handleVoice(v.OpusRecv, id)
+		connection=v
+		fmt.Println("JOINING CHANNEL")
+		handleVoice(v.OpusRecv,channelName)
 	} else {
-		close(v.OpusRecv)
-		v.Close()
+		fmt.Println("LEAVING CHANNEL")
+		close(connection.OpusRecv)
+		connection.Close()
+		connection.Disconnect()
+		AddtoS3(fmt.Sprint(fileLocation)+".ogg")
 	}
-}
-
-func main() {
-	handleMessages()
 }
 
 func handleMessages() {
-	Token := goDotEnvVariable("Token")
+	Token := GetEnvWithKey("Token")
 	dg, err := discordgo.New("Bot " + Token)
 	if err != nil {
 		fmt.Println("error creating Discord session,", err)
@@ -223,4 +170,59 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 	}
 
+}
+
+
+
+
+//AWS - S3
+
+func ConnectAws() *session.Session {
+	AccessKeyID := GetEnvWithKey("AWS_ACCESS_KEY_ID")
+	SecretAccessKey := GetEnvWithKey("AWS_SECRET_ACCESS_KEY")
+	MyRegion := GetEnvWithKey("MyRegion")
+	sess, err := session.NewSession(
+		&aws.Config{
+			Region: aws.String(MyRegion),
+			Credentials: credentials.NewStaticCredentials(
+				AccessKeyID,
+				SecretAccessKey,
+				"",
+			),
+		})
+	if err != nil {
+		fmt.Println("Error :",err)
+	}
+	return sess
+}
+
+
+func AddFileToS3(s *session.Session, fileDir string) error {
+
+	file, err := os.Open(fileDir)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	fmt.Println(GetEnvWithKey("S3Bucket"))
+	uploader := s3manager.NewUploader(s)
+	_, err = uploader.Upload(&s3manager.UploadInput{
+		Bucket:               aws.String(GetEnvWithKey("S3Bucket")),
+		Key:                  aws.String(fileDir),
+		Body:                 file,
+		ServerSideEncryption: aws.String("AES256"),
+	})
+	return err
+}
+
+func AddtoS3(fileDir string) error{
+	fmt.Println("FileDIR: ",fileDir)
+	s := ConnectAws()
+	// Upload
+	err := AddFileToS3(s, fileDir)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+	return nil
 }

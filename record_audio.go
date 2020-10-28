@@ -32,14 +32,14 @@ func main() {
 	var err error
 	dgVoice, err = discordgo.New("Bot " + Token)
 	if err != nil {
-		fmt.Println("error creating Discord session,", err)
+		log.Println("error creating Discord session,", err)
 		return
 	}
 	defer dgVoice.Close()
 	dgVoice.Identify.Intents = discordgo.MakeIntent(discordgo.IntentsGuildVoiceStates)
 	err = dgVoice.Open()
 	if err != nil {
-		fmt.Println("error opening connection:", err)
+		log.Println("error opening connection:", err)
 		return
 	}
 	handleMessages()
@@ -83,7 +83,7 @@ func handleVoice(c chan *discordgo.Packet, channel string) {
 			var err error
 			file, err = oggwriter.New(fmt.Sprintf("%d.ogg", p.SSRC), 48000, 2)
 			if err != nil {
-				fmt.Printf("failed to create file %d.ogg, giving up on recording: %v\n", p.SSRC, err)
+				log.Printf("failed to create file %d.ogg, giving up on recording: %v\n", p.SSRC, err)
 				return
 			}
 			files[p.SSRC] = file
@@ -91,14 +91,14 @@ func handleVoice(c chan *discordgo.Packet, channel string) {
 		rtp := createPitonRTPPacket(p)
 		err := file.WriteRTP(rtp)
 		if err != nil {
-			fmt.Printf("failed to write to file %d.ogg, giving up on recording: %v\n", p.SSRC, err)
+			log.Printf("failed to write to file %d.ogg, giving up on recording: %v\n", p.SSRC, err)
 		}
 	}
 
 	for _, f := range files {
 		f.Close()
-		fmt.Println(fileLocation)
-		fmt.Println("Closed file")
+		log.Println(fileLocation)
+		log.Println("Closed file")
 	}
 }
 
@@ -117,14 +117,14 @@ func handleConfig(status bool, channelName string) {
 
 		v, err := dgVoice.ChannelVoiceJoin(GuildID, ChannelID, true, false)
 		if err != nil {
-			fmt.Println("failed to join voice channel:", err)
+			log.Println("failed to join voice channel:", err)
 			return
 		}
 		connection=v
-		fmt.Println("JOINING CHANNEL")
+		log.Println("JOINING CHANNEL")
 		handleVoice(v.OpusRecv,channelName)
 	} else {
-		fmt.Println("LEAVING CHANNEL")
+		log.Println("LEAVING CHANNEL")
 		close(connection.OpusRecv)
 		connection.Close()
 		connection.Disconnect()
@@ -136,17 +136,17 @@ func handleMessages() {
 	Token := GetEnvWithKey("Token")
 	dg, err := discordgo.New("Bot " + Token)
 	if err != nil {
-		fmt.Println("error creating Discord session,", err)
+		log.Println("error creating Discord session,", err)
 		return
 	}
 	dg.AddHandler(messageCreate)
 	dg.Identify.Intents = discordgo.MakeIntent(discordgo.IntentsGuildMessages)
 	err = dg.Open()
 	if err != nil {
-		fmt.Println("error opening connection,", err)
+		log.Println("error opening connection,", err)
 		return
 	}
-	fmt.Println("Bot is now running.  Press CTRL-C to exit.")
+	log.Println("Bot is now running.  Press CTRL-C to exit.")
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt, os.Kill)
 	<-sc
@@ -191,7 +191,7 @@ func ConnectAws() *session.Session {
 			),
 		})
 	if err != nil {
-		fmt.Println("Error :",err)
+		log.Println("Error :",err)
 	}
 	return sess
 }
@@ -204,7 +204,7 @@ func AddFileToS3(s *session.Session, fileDir string) error {
 		return err
 	}
 	defer file.Close()
-	fmt.Println(GetEnvWithKey("S3Bucket"))
+	log.Println(GetEnvWithKey("S3Bucket"))
 	uploader := s3manager.NewUploader(s)
 	_, err = uploader.Upload(&s3manager.UploadInput{
 		Bucket:               aws.String(GetEnvWithKey("S3Bucket")),
@@ -216,12 +216,12 @@ func AddFileToS3(s *session.Session, fileDir string) error {
 }
 
 func AddtoS3(fileDir string) error{
-	fmt.Println("FileDIR: ",fileDir)
+	log.Println("FileDIR: ",fileDir)
 	s := ConnectAws()
 	// Upload
 	err := AddFileToS3(s, fileDir)
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		return err
 	}
 	return nil
